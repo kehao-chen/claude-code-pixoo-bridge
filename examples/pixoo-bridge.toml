@@ -1,0 +1,17 @@
+# Copy this file to:
+# ~/.config/claude-code-pixoo-bridge/config.toml
+
+host = "127.0.0.1"
+port = 8765
+log_level = "info"
+
+# When device_mac is set, pixoo-bridge automatically defaults to
+# transport = "macos-bluetooth".
+device_mac = "AA:BB:CC:DD:EE:FF"
+device_channel = 1
+bluetooth_packet_gap_ms = 30
+bluetooth_settle_ms = 500
+# brightness_percent = 5
+usage_label = "S"
+status_dot_enabled = true
+# mascot_asset_path = "/absolute/path/to/clawd.png"
