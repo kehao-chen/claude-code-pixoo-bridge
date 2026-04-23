@@ -2,6 +2,10 @@
 
 Turn Claude Code into a **global ambient dashboard** on a Pixoo Max.
 
+
+https://github.com/user-attachments/assets/6684dfd9-c524-497c-98ef-93f817064116
+
+
 This project listens to Claude Code hook events and status snapshots, reduces
 them into one global state, renders a tiny `32x32` Clawd scene, and sends it
 to a Pixoo Max. The normal runtime is a **single local process** with **direct
