@@ -29,6 +29,9 @@ class BridgeRuntimeConfig:
     usage_label: str = "S"
     mascot_asset_path: str | None = None
     status_dot_enabled: bool = True
+    openusage_enabled: bool = True
+    openusage_binary: str | None = None
+    openusage_poll_seconds: float = 60.0
     log_level: str = "info"
     config_path: Path | None = None
 
@@ -104,6 +107,18 @@ def load_runtime_config(args: Any) -> BridgeRuntimeConfig:
         "status_dot_enabled",
     )
 
+    openusage_enabled = _require_bool(
+        _resolve_value(args, config_data, "openusage_enabled", True),
+        "openusage_enabled",
+    )
+    openusage_binary = _optional_string(
+        _resolve_value(args, config_data, "openusage_binary", None)
+    )
+    openusage_poll_seconds = _require_positive_float(
+        _resolve_value(args, config_data, "openusage_poll_seconds", 60.0),
+        "openusage_poll_seconds",
+    )
+
     if transport == "macos-bluetooth" and device_mac is None:
         raise ValueError(
             "device_mac must be set in the config file or via --device-mac when "
@@ -126,6 +141,9 @@ def load_runtime_config(args: Any) -> BridgeRuntimeConfig:
         usage_label=usage_label,
         mascot_asset_path=mascot_asset_path,
         status_dot_enabled=status_dot_enabled,
+        openusage_enabled=openusage_enabled,
+        openusage_binary=openusage_binary,
+        openusage_poll_seconds=openusage_poll_seconds,
         log_level=log_level,
         config_path=config_path if config_exists or requested_path else None,
     )
@@ -211,6 +229,13 @@ def _require_float(value: Any, name: str) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     raise ValueError(f"{name} must be a number")
+
+
+def _require_positive_float(value: Any, name: str) -> float:
+    resolved = _require_float(value, name)
+    if resolved <= 0:
+        raise ValueError(f"{name} must be greater than 0")
+    return resolved
 
 
 def _require_choice(value: Any, name: str, choices: set[str]) -> str:

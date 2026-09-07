@@ -15,6 +15,7 @@ macOS Bluetooth** delivery.
 
 - receives Claude Code hook events via `POST /hooks`
 - receives Claude Code status snapshots via `POST /status`
+- polls the `openusage` binary in the background for Claude quota usage
 - keeps a small **internal** per-source cache keyed by `session_id`
 - derives **one global display state** across all active Claude Code sources
 - renders a built-in Clawd pixel animation plus a compact usage band
@@ -24,21 +25,22 @@ macOS Bluetooth** delivery.
 ## Architecture at a glance
 
 ```text
-Claude Code hooks/statusLine
-          |
-          v
-local relay scripts
-  pixoo-hook.sh
-  pixoo-statusline.sh
-  pixoo-statusline-chain.sh
-          |
-          v
+Claude Code hooks/statusLine          openusage binary
+          |                                  |
+          v                                  v
+local relay scripts                  background poller
+  pixoo-hook.sh                       (every 60s)
+  pixoo-statusline.sh                        |
+  pixoo-statusline-chain.sh                  |
+          |                                  |
+          +-----------------+----------------+
+                            v
 Claude Code Pixoo Bridge
   |- POST /hooks
   |- POST /status
   |- per-source cache (internal only)
   |- global reducer
-  |- usage stabilizer / 5H zero debounce
+  |- global usage reading
   |- 32x32 Clawd renderer
           |
           v
@@ -71,21 +73,21 @@ State colors:
 
 ### Usage band rules
 
-The bottom usage band follows the **most recently received status snapshot
-globally**, not the currently selected top-state source.
-
-Usage source priority:
-
-1. `rate_limits.five_hour.used_percentage`
-2. `context_window.used_percentage`
-3. `rate_limits.seven_day.used_percentage`
+The bottom usage band shows the Claude 5-hour quota reported by the `openusage`
+binary, which the bridge polls in the background. It is **global**: it does not
+belong to the session whose state the mascot is currently showing, and it keeps
+updating when no Claude Code session is running at all.
 
 Display rules:
 
+- the value is `providers.claude.resources.session.used` from `openusage`
 - fractional values are truncated (`16.9` -> `16`)
-- a single `5H = 0` update is treated as suspicious
-- `0%` is only accepted after the same source reports `5H = 0` **twice in a row**
+- a reading that omits the percentage keeps the previous value, so a `stale`
+  report never blanks the band
 - Pixoo is only updated when the **final rendered output changes**, so metadata-only changes or `48.1 -> 48.2 -> 48%` cases do not trigger a resend
+
+Status snapshots no longer feed the band. `context_window.used_percentage` is
+still used for the `CTX` footer.
 
 The Clawd style guide and display semantics live in
 [`docs/display-states.md`](docs/display-states.md).
@@ -121,6 +123,22 @@ status_dot_enabled = true
 ```
 
 Use `brightness_percent = 1` or `5` if you want the Pixoo to stay very dim.
+
+### 2b. Install `openusage` (for the usage band)
+
+The usage band needs the `openusage` CLI on the machine running the bridge.
+The bridge looks for it in the usual install locations (`/usr/local/bin`,
+`/opt/homebrew/bin`, `~/.local/bin`, mise shims, and `OpenUsage.app`). Point at
+it explicitly, change the interval, or turn polling off entirely:
+
+```toml
+openusage_enabled = true
+openusage_poll_seconds = 60
+# openusage_binary = "/usr/local/bin/openusage"
+```
+
+Without it the bridge still runs — the band just shows `--`, and a warning is
+logged at startup.
 
 ### 3. Run the bridge
 
@@ -190,9 +208,9 @@ Debug endpoint:
 
 - `GET /debug/state`
 
-`/debug/state` exposes the internal per-source cache plus the currently selected
-global scene. It is useful for inspection, but it is **not** the public display
-model.
+`/debug/state` exposes the internal per-source cache, the latest `openusage`
+reading, plus the currently selected global scene. It is useful for
+inspection, but it is **not** the public display model.
 
 ## Optional TCP debug proxy
 

@@ -14,12 +14,19 @@ from .bridge import (
     TCPProxyTransport,
     build_macos_bluetooth_transport,
 )
+from .openusage import (
+    OpenUsagePoller,
+    find_openusage_binary,
+    read_openusage,
+)
 from .rendering import SimplePixooRenderer
 from .runtime_config import (
     BridgeRuntimeConfig,
     default_config_path,
     load_runtime_config,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def build_transport(config: BridgeRuntimeConfig) -> PixooTransport:
@@ -61,6 +68,33 @@ def build_renderer(config: BridgeRuntimeConfig) -> SimplePixooRenderer:
         usage_label=config.usage_label,
         mascot_asset_path=config.mascot_asset_path,
         status_dot_enabled=config.status_dot_enabled,
+    )
+
+
+def build_openusage_poller(
+    config: BridgeRuntimeConfig,
+    service: BridgeService,
+) -> OpenUsagePoller | None:
+    if not config.openusage_enabled:
+        return None
+
+    binary = find_openusage_binary(config.openusage_binary)
+    if binary is None:
+        logger.warning(
+            "openusage binary not found; the usage band stays empty until it is "
+            "installed or openusage_binary is configured"
+        )
+        return None
+
+    logger.info(
+        "polling %s every %ss for Claude usage",
+        binary,
+        config.openusage_poll_seconds,
+    )
+    return OpenUsagePoller(
+        reader=lambda: read_openusage(binary),
+        on_reading=service.ingest_usage,
+        interval_seconds=config.openusage_poll_seconds,
     )
 
 
@@ -162,6 +196,24 @@ def main() -> None:
         help="Show or hide the top-right animated status dot.",
     )
     parser.add_argument(
+        "--openusage-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Poll the openusage binary for Claude quota usage.",
+    )
+    parser.add_argument(
+        "--openusage-binary",
+        default=None,
+        help="Path to the openusage binary. Defaults to searching the usual "
+        "install locations.",
+    )
+    parser.add_argument(
+        "--openusage-poll-seconds",
+        type=float,
+        default=None,
+        help="Seconds between openusage polls.",
+    )
+    parser.add_argument(
         "--log-level",
         default=None,
         choices=["critical", "error", "warning", "info", "debug"],
@@ -182,12 +234,20 @@ def main() -> None:
         renderer=build_renderer(config),
     )
 
-    uvicorn.run(
-        create_app(service),
-        host=config.host,
-        port=config.port,
-        log_level=config.log_level,
-    )
+    poller = build_openusage_poller(config, service)
+    if poller is not None:
+        poller.start()
+
+    try:
+        uvicorn.run(
+            create_app(service),
+            host=config.host,
+            port=config.port,
+            log_level=config.log_level,
+        )
+    finally:
+        if poller is not None:
+            poller.stop()
 
 
 if __name__ == "__main__":

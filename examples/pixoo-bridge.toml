@@ -15,3 +15,11 @@ bluetooth_settle_ms = 500
 usage_label = "S"
 status_dot_enabled = true
 # mascot_asset_path = "/absolute/path/to/clawd.png"
+
+# The bottom usage band is fed by the `openusage` binary, polled in the
+# background. Leave openusage_binary unset to search the usual install
+# locations. openusage caches its own upstream fetch for about five minutes,
+# so polling faster than that mostly re-reads its cache.
+openusage_enabled = true
+openusage_poll_seconds = 60
+# openusage_binary = "/usr/local/bin/openusage"

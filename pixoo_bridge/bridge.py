@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Callable, Protocol, Sequence
 
+from .openusage import OpenUsageReading
 from .pixoo_protocol import PixooMaxProtocolAdapter, normalize_brightness_percent
 from .proxy_sender import MacOSBluetoothPacketSender, PixooPacketSender
 from .rendering import PixooRenderer, RenderedScene, SimplePixooRenderer
@@ -139,8 +140,6 @@ class StatusSnapshot:
     session_name: str | None = None
     model_display_name: str | None = None
     context_used_pct: float | None = None
-    five_hour_pct: float | None = None
-    seven_day_pct: float | None = None
     total_cost_usd: float | None = None
 
 
@@ -161,8 +160,6 @@ class SessionState:
     error_details: str | None = None
     tool_name: str | None = None
     context_used_pct: float | None = None
-    five_hour_pct: float | None = None
-    seven_day_pct: float | None = None
     total_cost_usd: float | None = None
     updated_at: datetime = field(default_factory=utc_now)
     ended_at: datetime | None = None
@@ -184,8 +181,6 @@ class SessionState:
             "error_details": self.error_details,
             "tool_name": self.tool_name,
             "context_used_pct": self.context_used_pct,
-            "five_hour_pct": self.five_hour_pct,
-            "seven_day_pct": self.seven_day_pct,
             "total_cost_usd": self.total_cost_usd,
             "updated_at": self.updated_at.isoformat(),
             "ended_at": self.ended_at.isoformat() if self.ended_at else None,
@@ -266,12 +261,6 @@ def parse_status_payload(payload: dict[str, Any]) -> StatusSnapshot:
         model_display_name=model_display_name,
         context_used_pct=optional_number(
             nested_value(payload, "context_window", "used_percentage")
-        ),
-        five_hour_pct=optional_number(
-            nested_value(payload, "rate_limits", "five_hour", "used_percentage")
-        ),
-        seven_day_pct=optional_number(
-            nested_value(payload, "rate_limits", "seven_day", "used_percentage")
         ),
         total_cost_usd=optional_number(
             nested_value(payload, "cost", "total_cost_usd")
@@ -360,18 +349,6 @@ def format_usage_number(value: float | None) -> str:
         return "--"
     bounded = max(0.0, min(100.0, value))
     return str(int(bounded))
-
-
-def preferred_usage_value(
-    *,
-    five_hour_pct: float | None,
-    context_used_pct: float | None,
-    seven_day_pct: float | None,
-) -> float | None:
-    for value in (five_hour_pct, context_used_pct, seven_day_pct):
-        if value is not None:
-            return value
-    return None
 
 
 def rendered_scene_signature(rendered_scene: RenderedScene) -> str:
@@ -576,8 +553,7 @@ class BridgeService:
         self._sessions: dict[str, SessionState] = {}
         self._lock = threading.RLock()
         self._last_render_signature: str | None = None
-        self._latest_status_usage_pct: float | None = None
-        self._five_hour_zero_streaks: dict[str, int] = {}
+        self._usage = OpenUsageReading()
 
     def ingest_hook(self, payload: dict[str, Any]) -> dict[str, Any]:
         event = parse_hook_payload(payload)
@@ -610,26 +586,7 @@ class BridgeService:
             if snapshot.model_display_name is not None:
                 session.model_display_name = snapshot.model_display_name
             session.context_used_pct = snapshot.context_used_pct
-            (
-                trusted_five_hour_pct,
-                suspicious_zero_five_hour,
-            ) = self._resolve_trusted_five_hour_pct(
-                session_id=snapshot.session_id,
-                previous_value=session.five_hour_pct,
-                incoming_value=snapshot.five_hour_pct,
-            )
-            session.five_hour_pct = trusted_five_hour_pct
-            session.seven_day_pct = snapshot.seven_day_pct
             session.total_cost_usd = snapshot.total_cost_usd
-            latest_usage_pct = None
-            if not suspicious_zero_five_hour:
-                latest_usage_pct = preferred_usage_value(
-                    five_hour_pct=trusted_five_hour_pct,
-                    context_used_pct=snapshot.context_used_pct,
-                    seven_day_pct=snapshot.seven_day_pct,
-                )
-            if latest_usage_pct is not None:
-                self._latest_status_usage_pct = latest_usage_pct
             if (
                 session.last_event is None
                 and session.lifecycle_state == LifecycleState.IDLE
@@ -647,6 +604,22 @@ class BridgeService:
                 "scene_emitted": scene_emitted,
             }
 
+    def ingest_usage(self, reading: OpenUsageReading) -> dict[str, Any]:
+        """Apply an `openusage` reading, the bridge's only source of quota usage."""
+        with self._lock:
+            now = self._clock()
+            self._prune_ended_sessions(now)
+            self._usage = self._merge_usage(reading)
+            scene = self._select_scene(now)
+            scene_emitted = self._emit_scene(scene)
+            return {
+                "accepted": True,
+                "source": "openusage",
+                "usage": self._usage.to_dict(),
+                "selected_scene": scene.to_dict(),
+                "scene_emitted": scene_emitted,
+            }
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             now = self._clock()
@@ -659,6 +632,7 @@ class BridgeService:
             )
             return {
                 "session_count": len(sessions),
+                "usage": self._usage.to_dict(),
                 "selected_scene": scene.to_dict(),
                 "sessions": sessions,
             }
@@ -796,44 +770,39 @@ class BridgeService:
         ]
         for session_id in expired_session_ids:
             self._sessions.pop(session_id, None)
-            self._five_hour_zero_streaks.pop(session_id, None)
 
-    def _resolve_trusted_five_hour_pct(
-        self,
-        *,
-        session_id: str,
-        previous_value: float | None,
-        incoming_value: float | None,
-    ) -> tuple[float | None, bool]:
-        if incoming_value is None:
-            self._five_hour_zero_streaks.pop(session_id, None)
-            return None, False
-        if incoming_value != 0:
-            self._five_hour_zero_streaks.pop(session_id, None)
-            return incoming_value, False
-
-        zero_streak = self._five_hour_zero_streaks.get(session_id, 0) + 1
-        self._five_hour_zero_streaks[session_id] = zero_streak
-        if zero_streak >= 2:
-            return 0.0, False
-        return previous_value, True
+    def _merge_usage(self, reading: OpenUsageReading) -> OpenUsageReading:
+        """Keep the last known percentage for any figure the reading omits."""
+        return OpenUsageReading(
+            session_pct=(
+                reading.session_pct
+                if reading.session_pct is not None
+                else self._usage.session_pct
+            ),
+            weekly_pct=(
+                reading.weekly_pct
+                if reading.weekly_pct is not None
+                else self._usage.weekly_pct
+            ),
+            stale=reading.stale,
+        )
 
     def _select_scene(self, now: datetime) -> ScreenScene:
         session = self._choose_display_session(now)
         if session is None:
             return ScreenScene(
                 kind=SceneKind.IDLE,
-                detail="--",
+                detail=format_usage_number(self._usage.session_pct),
                 footer="No sessions",
                 updated_at=now,
             )
 
         scene_kind = self._scene_kind_for_session(session, now)
-        usage_text = format_usage_number(self._latest_status_usage_pct)
+        usage_text = format_usage_number(self._usage.session_pct)
         context_text = format_percentage("CTX", session.context_used_pct)
         secondary_text = (
-            format_percentage("5H", session.five_hour_pct)
-            or format_percentage("7D", session.seven_day_pct)
+            format_percentage("5H", self._usage.session_pct)
+            or format_percentage("7D", self._usage.weekly_pct)
             or (session.model_display_name or "")
         )
 

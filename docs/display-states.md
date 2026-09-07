@@ -118,28 +118,22 @@ idle, thinking, approval, error, or seasonal animation variants.
 
 ## Usage choice
 
-Use:
+The band shows `providers.claude.resources.session.used` from the `openusage`
+binary, polled in the background every 60 seconds by default.
 
-- `rate_limits.five_hour.used_percentage`
-- fallback: `context_window.used_percentage`
-- fallback: `rate_limits.seven_day.used_percentage`
+This answers: **how full the current 5-hour Claude quota is.**
 
-This makes the default band track the shorter-term session quota first, while
-still falling back to other available usage numbers if the 5-hour value is not
-present.
+The band is global rather than session-scoped, and it is independent of Claude
+Code entirely. It keeps its value when the mascot on screen was selected from
+some other higher-priority session, and it keeps showing usage when no session
+is active at all.
 
-This answers:
+Status snapshots no longer feed the band. `context_window.used_percentage` still
+arrives over `POST /status` and is used for the `CTX` footer only.
 
-- how full the current short-term Claude Code usage quota is
-- and, when needed, still falls back to context or weekly usage data
-
-The bottom usage band is global rather than session-scoped: it follows the most
-recently received status snapshot value, even if the mascot / state currently on
-screen was selected from a different higher-priority session.
-
-To reduce flicker from noisy quota reporting, a one-off `5H = 0` update is
-treated as suspicious and ignored; `0%` is only accepted after the same source
-reports `5H = 0` twice in a row.
+A reading that omits the session percentage leaves the previous value in place,
+so a `stale` `openusage` report never blanks the band. A reported `0` is shown
+immediately — `openusage` reads the quota directly, so zero means zero.
 
 For this version, drop the fractional part and render it as a simple integer
 string like `18` or `64`, then show it as slightly dim white text in the bottom band with a

@@ -28,6 +28,9 @@ class RuntimeConfigTests(unittest.TestCase):
             "usage_label": None,
             "mascot_asset_path": None,
             "status_dot_enabled": None,
+            "openusage_enabled": None,
+            "openusage_binary": None,
+            "openusage_poll_seconds": None,
             "log_level": None,
         }
         values.update(overrides)
@@ -95,6 +98,60 @@ class RuntimeConfigTests(unittest.TestCase):
 
         self.assertEqual(config.transport, "macos-bluetooth")
         self.assertEqual(config.device_mac, "aa-bb-cc-dd-ee-ff")
+
+    def test_openusage_polling_is_enabled_by_default_every_sixty_seconds(self) -> None:
+        with TemporaryDirectory() as tempdir:
+            config_path = Path(tempdir) / "config.toml"
+            config_path.write_text("port = 8765\n", encoding="utf-8")
+
+            config = load_runtime_config(self.make_args(config=str(config_path)))
+
+        self.assertTrue(config.openusage_enabled)
+        self.assertIsNone(config.openusage_binary)
+        self.assertEqual(config.openusage_poll_seconds, 60.0)
+
+    def test_openusage_settings_load_from_config(self) -> None:
+        with TemporaryDirectory() as tempdir:
+            config_path = Path(tempdir) / "config.toml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "openusage_enabled = false",
+                        'openusage_binary = "/opt/homebrew/bin/openusage"',
+                        "openusage_poll_seconds = 120",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            config = load_runtime_config(self.make_args(config=str(config_path)))
+
+        self.assertFalse(config.openusage_enabled)
+        self.assertEqual(config.openusage_binary, "/opt/homebrew/bin/openusage")
+        self.assertEqual(config.openusage_poll_seconds, 120.0)
+
+    def test_cli_openusage_poll_seconds_overrides_config(self) -> None:
+        with TemporaryDirectory() as tempdir:
+            config_path = Path(tempdir) / "config.toml"
+            config_path.write_text("openusage_poll_seconds = 120\n", encoding="utf-8")
+
+            config = load_runtime_config(
+                self.make_args(
+                    config=str(config_path),
+                    openusage_poll_seconds=15.0,
+                )
+            )
+
+        self.assertEqual(config.openusage_poll_seconds, 15.0)
+
+    def test_openusage_poll_seconds_must_be_positive(self) -> None:
+        with TemporaryDirectory() as tempdir:
+            config_path = Path(tempdir) / "config.toml"
+            config_path.write_text("openusage_poll_seconds = 0\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "greater than 0"):
+                load_runtime_config(self.make_args(config=str(config_path)))
 
     def test_usage_label_asset_path_and_brightness_load_from_config(self) -> None:
         with TemporaryDirectory() as tempdir:

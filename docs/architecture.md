@@ -12,19 +12,20 @@ is an implementation detail, not the product model shown on the Pixoo.
 ## High-level flow
 
 ```text
-Claude Code hooks/statusLine
-          |
-          v
-local shell relay scripts
-          |
-          v
-POST /hooks + POST /status
-          |
-          v
+Claude Code hooks/statusLine        openusage binary
+          |                                |
+          v                                v
+local shell relay scripts          OpenUsagePoller
+          |                                |
+          v                                |
+POST /hooks + POST /status                 |
+          |                                |
+          +----------------+---------------+
+                           v
 BridgeService
   |- per-source cache (internal only)
   |- global reducer
-  |- usage stabilizer / 5H zero debounce
+  |- global usage reading
           |
           v
 32x32 renderer
@@ -69,8 +70,11 @@ The bridge keeps one in-memory record per incoming Claude Code source. That
 record stores:
 
 - recent hook-derived state such as attention, failure, thinking, working, or waiting
-- latest status-derived values such as context percentage, 5-hour quota, and weekly quota
+- latest status-derived values such as context percentage and session cost
 - timestamps used for unattended detection
+
+Quota usage is deliberately **not** stored here. It is global, and it comes from
+`openusage` rather than from any one Claude Code source.
 
 This cache exists only so the bridge can merge multiple raw input streams
 correctly.
@@ -88,20 +92,30 @@ Important rules:
 - the bottom usage band is **global**, not tied to the selected top-state source
 - transport updates are deduped by **rendered output**, not by internal state metadata
 
-### 5. Usage selection
+### 5. Usage polling
 
-The bottom usage band follows the most recently received status snapshot and uses
-this preference order:
+`pixoo_bridge/openusage.py` is the only place that shells out to an external
+tool. A background poller runs the `openusage` binary on a fixed interval
+(60 seconds by default), reads
+`providers.claude.resources.session.used` from its JSON report, and hands the
+result to `BridgeService.ingest_usage`.
 
-1. `rate_limits.five_hour.used_percentage`
-2. `context_window.used_percentage`
-3. `rate_limits.seven_day.used_percentage`
+The bottom band shows that session (5-hour) percentage, truncated to an integer.
+The weekly percentage is read at the same time and is used only for the `7D`
+footer fallback.
 
-The bridge truncates fractional values to integers for display.
+Notes:
 
-To reduce flicker from noisy quota reporting, a single `5H = 0` update is
-treated as suspicious. `0%` is only accepted after the same source reports
-`5H = 0` twice in a row.
+- `openusage` caches its own upstream fetch for about five minutes, so polling
+  faster mostly re-reads that cache
+- a reading that omits a percentage leaves the previous value in place, so a
+  `stale` report never blanks the band
+- the poller keeps running through a failed or unparseable `openusage` run
+- when the binary is missing, the bridge logs a warning at startup and the band
+  stays `--`
+
+Because usage no longer arrives with a session attached, the band keeps working
+when no Claude Code session is active — the idle scene shows the same number.
 
 ### 6. Renderer
 
